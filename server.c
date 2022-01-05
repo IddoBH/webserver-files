@@ -5,14 +5,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <sys/time.h>
 
 #define INFINATE_LOOP while(1)
 
 //globals
+
+extern struct timeval request_clock;
+
+extern int threads;
+extern pthread_t* thread_ids;
+
 int q_size;
 int* request_queue;
 int head = 0;
 int tail = 0;
+
+
 
 
 enum schedalg {BLOCK, DROP_HEAD, DROP_RANDOM, DROP_TAIL} chosen_alg;
@@ -20,9 +29,6 @@ enum schedalg {BLOCK, DROP_HEAD, DROP_RANDOM, DROP_TAIL} chosen_alg;
 
 pthread_cond_t condition;
 pthread_mutex_t mutex;
-
-
-
 
 //
 // server.c: A very, very simple web server
@@ -67,11 +73,12 @@ int dequeue() {
 
 void *work(void *vargp)
 {
+    int *myid = (int *)vargp;
     INFINATE_LOOP
     {
         int connfd = dequeue();
 
-        requestHandle(connfd);
+        requestHandle(connfd, myid);
 
         Close(connfd);
     }
@@ -92,7 +99,7 @@ bool queueIsFull() { return tail - head == q_size; }
 
 int main(int argc, char *argv[])
 {
-    int listenfd, connfd, port, threads, clientlen;
+    int listenfd, connfd, port, clientlen;
     struct sockaddr_in clientaddr;
 
     pthread_cond_init(&condition, NULL);
@@ -105,10 +112,10 @@ int main(int argc, char *argv[])
     //
     request_queue = malloc(q_size * sizeof(int));
 
-    pthread_t* thread_ids = malloc(threads * sizeof(pthread_t));
-    for (unsigned int i=0; i<threads; i++)
+    thread_ids = malloc(threads * sizeof(pthread_t));
+    for (int i=0; i<threads; i++) {
         pthread_create(&thread_ids[i], NULL, work, NULL);
-
+    }
 
     listenfd = Open_listenfd(port);
     INFINATE_LOOP {
@@ -122,6 +129,7 @@ int main(int argc, char *argv[])
             pthread_mutex_unlock(&mutex);
         }
 	    connfd = Accept(listenfd, (SA *)&clientaddr, (socklen_t *) &clientlen);
+        gettimeofday(&request_clock, NULL);
 
 	//
 	// HW3: In general, don't handle the request in the main thread.

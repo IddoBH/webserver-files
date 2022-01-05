@@ -4,7 +4,21 @@
 
 #include "segel.h"
 #include "request.h"
+#include <pthread.h>
+#include <sys/time.h>
 
+struct timeval request_clock;
+
+int threads;
+pthread_t* thread_ids;
+
+unsigned int request_counter = 0;
+unsigned int static_counter = 0;
+unsigned int dynamic_counter = 0;
+
+
+
+void printMatrics(char *buf);
 // requestError(      fd,    filename,        "404",    "Not found", "OS-HW3 Server could not find this file");
 void requestError(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg) 
 {
@@ -103,13 +117,13 @@ void requestGetFiletype(char *filename, char *filetype)
 
 void requestServeDynamic(int fd, char *filename, char *cgiargs)
 {
-   char buf[MAXLINE], *emptylist[] = {NULL};
+    char buf[MAXLINE], *emptylist[] = {NULL};
 
-   // The server does only a little bit of the header.  
-   // The CGI script has to finish writing out the header.
-   sprintf(buf, "HTTP/1.0 200 OK\r\n");
-   sprintf(buf, "%sServer: OS-HW3 Web Server\r\n", buf);
-
+    // The server does only a little bit of the header.
+    // The CGI script has to finish writing out the header.
+    sprintf(buf, "HTTP/1.0 200 OK\r\n");
+    sprintf(buf, "%sServer: OS-HW3 Web Server\r\n", buf);
+    printMatrics(buf);
    Rio_writen(fd, buf, strlen(buf));
 
    if (Fork() == 0) {
@@ -123,7 +137,17 @@ void requestServeDynamic(int fd, char *filename, char *cgiargs)
 }
 
 
-void requestServeStatic(int fd, char *filename, int filesize) 
+void printMatrics(char *buf)
+{
+    for (int i = 0; i < threads; ++i) {
+        if (thread_ids[i] == pthread_self()) sprintf(buf, "%sStat-Thread-Id:: %d\r\n", buf, i);
+    }
+    sprintf(buf, "%sStat-Thread-Count:: %d\r\n", buf, request_counter);
+    sprintf(buf, "%sStat-Thread-Static:: %d\r\n", buf, static_counter);
+    sprintf(buf, "%sStat-Thread-Dynamic:: %d\r\n", buf, dynamic_counter);
+}
+
+void requestServeStatic(int fd, char *filename, int filesize)
 {
    int srcfd;
    char *srcp, filetype[MAXLINE], buf[MAXBUF];
@@ -138,12 +162,12 @@ void requestServeStatic(int fd, char *filename, int filesize)
    Close(srcfd);
 
    // put together response
-   sprintf(buf, "HTTP/1.0 200 OK\r\n");
-   sprintf(buf, "%sServer: OS-HW3 Web Server\r\n", buf);
-   sprintf(buf, "%sContent-Length: %d\r\n", buf, filesize);
-   sprintf(buf, "%sContent-Type: %s\r\n\r\n", buf, filetype);
-
-   Rio_writen(fd, buf, strlen(buf));
+    sprintf(buf, "HTTP/1.0 200 OK\r\n");
+    sprintf(buf, "%sServer: OS-HW3 Web Server\r\n", buf);
+    sprintf(buf, "%sContent-Length: %d\r\n", buf, filesize);
+    sprintf(buf, "%sContent-Type: %s\r\n\r\n", buf, filetype);
+    printMatrics(buf);
+    Rio_writen(fd, buf, strlen(buf));
 
    //  Writes out to the client socket the memory-mapped file 
    Rio_writen(fd, srcp, filesize);
@@ -152,9 +176,8 @@ void requestServeStatic(int fd, char *filename, int filesize)
 }
 
 // handle a request
-void requestHandle(int fd)
+void requestHandle(int fd, int *thread_id)
 {
-
    int is_static;
    struct stat sbuf;
    char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
@@ -166,6 +189,8 @@ void requestHandle(int fd)
    sscanf(buf, "%s %s %s", method, uri, version);
 
    printf("%s %s %s\n", method, uri, version);
+
+   ++request_counter;
 
    if (strcasecmp(method, "GET")) {
       requestError(fd, method, "501", "Not Implemented", "OS-HW3 Server does not implement this method");
@@ -184,13 +209,17 @@ void requestHandle(int fd)
          requestError(fd, filename, "403", "Forbidden", "OS-HW3 Server could not read this file");
          return;
       }
-      requestServeStatic(fd, filename, sbuf.st_size);
+      ++static_counter;
+
+       requestServeStatic(fd, filename, sbuf.st_size);
    } else {
       if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) {
          requestError(fd, filename, "403", "Forbidden", "OS-HW3 Server could not run this CGI program");
          return;
       }
-      requestServeDynamic(fd, filename, cgiargs);
+
+      ++dynamic_counter;
+       requestServeDynamic(fd, filename, cgiargs);
    }
 }
 
