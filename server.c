@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #define INFINATE_LOOP while(1)
 
@@ -12,6 +13,10 @@ int q_size;
 int* request_queue;
 int head = 0;
 int tail = 0;
+
+
+enum schedalg {BLOCK, DROP_HEAD, DROP_RANDOM, DROP_TAIL} chosen_alg;
+
 
 pthread_cond_t condition;
 pthread_mutex_t mutex;
@@ -32,19 +37,25 @@ pthread_mutex_t mutex;
 // HW3: Parse the new arguments too
 void getargs(int *port, int *threads, int argc, char *argv[])
 {
-    if (argc < 4) {
-	fprintf(stderr, "Usage: %s <port> <threads> <queue_size>\n", argv[0]);
+    if (argc < 5) {
+	fprintf(stderr, "Usage: %s <port> <threads> <queue_size> <schedalg>\n", argv[0]);
 	exit(1);
     }
     *port = atoi(argv[1]);
     *threads = atoi(argv[2]);
     q_size = atoi(argv[3]);
+    if (strcmp(argv[4], "block") == 0) chosen_alg = BLOCK;
+    else if (strcmp(argv[4], "dh") == 0) chosen_alg = DROP_HEAD;
+    else if (strcmp(argv[4], "random") == 0) chosen_alg = DROP_RANDOM;
+    else if (strcmp(argv[4], "dt") == 0) chosen_alg = DROP_TAIL;
 }
 
 
+bool queueIsEmpty() { return head == tail; }
+
 int dequeue() {
     pthread_mutex_lock(&mutex);
-    while (head == tail) {
+    while (queueIsEmpty()) {
         pthread_cond_wait(&condition, &mutex);
     }
 
@@ -70,10 +81,14 @@ void *work(void *vargp)
 
 void enqueue(int fd) {
     pthread_mutex_lock(&mutex);
+
     request_queue[(tail++) % q_size] = fd;
+
     pthread_cond_signal(&condition);
     pthread_mutex_unlock(&mutex);
 }
+
+bool queueIsFull() { return tail - head == q_size; }
 
 int main(int argc, char *argv[])
 {
@@ -85,7 +100,6 @@ int main(int argc, char *argv[])
 
     getargs(&port, &threads, argc, argv);
 
-    fprintf(stdout, "Port: %d\nThreads: %d\nQueue: %d\n", port, threads, q_size); // todo: delete before sub
     //
     // HW3: Create some threads...
     //
@@ -99,6 +113,14 @@ int main(int argc, char *argv[])
     listenfd = Open_listenfd(port);
     INFINATE_LOOP {
 	    clientlen = sizeof(clientaddr);
+        if (chosen_alg == BLOCK) {
+            pthread_mutex_lock(&mutex);
+            while (queueIsFull()){
+                pthread_cond_wait(&condition, &mutex);
+            }
+            pthread_cond_signal(&condition);
+            pthread_mutex_unlock(&mutex);
+        }
 	    connfd = Accept(listenfd, (SA *)&clientaddr, (socklen_t *) &clientlen);
 
 	//
@@ -106,7 +128,31 @@ int main(int argc, char *argv[])
 	// Save the relevant info in a buffer and have one of the worker threads
 	// do the work.
 	//
-        enqueue(connfd);
+        switch (chosen_alg) {
+            case BLOCK:
+                enqueue(connfd);
+                break;
+            case DROP_HEAD:
+                enqueue(connfd);
+                break;
+            case DROP_RANDOM:
+                if (queueIsFull()){
+                    int half_q = q_size / 2;
+                    for (int i = 0; i < half_q; ++i){
+                        int to_remove = rand() % (tail - head);
+                        for (int j = to_remove; (j % q_size) != (tail % q_size); ++j) {
+                            request_queue[j] = request_queue[(j + 1) % q_size];
+                        }
+                        --tail;
+                    }
+                }
+                enqueue(connfd);
+                break;
+            case DROP_TAIL:
+                if (queueIsFull()) --tail;
+                enqueue(connfd);
+                break;
+        }
     }
     free(thread_ids);
     free(request_queue);
