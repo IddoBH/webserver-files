@@ -6,20 +6,19 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <sys/time.h>
-
+#include <sys/queue.h>
 #define INFINATE_LOOP while(1)
 
 //globals
 
-extern struct timeval request_clock;
+extern struct request_queue main_req_q;
 
 extern int threads;
 extern pthread_t* thread_ids;
 
-int q_size;
+extern unsigned int max_size;
+extern unsigned int current_size;
 int* request_queue;
-int head = 0;
-int tail = 0;
 
 
 
@@ -49,7 +48,7 @@ void getargs(int *port, int *threads, int argc, char *argv[])
     }
     *port = atoi(argv[1]);
     *threads = atoi(argv[2]);
-    q_size = atoi(argv[3]);
+    max_size = atoi(argv[3]);
     if (strcmp(argv[4], "block") == 0) chosen_alg = BLOCK;
     else if (strcmp(argv[4], "dh") == 0) chosen_alg = DROP_HEAD;
     else if (strcmp(argv[4], "random") == 0) chosen_alg = DROP_RANDOM;
@@ -57,45 +56,48 @@ void getargs(int *port, int *threads, int argc, char *argv[])
 }
 
 
-bool queueIsEmpty() { return head == tail; }
-
-int dequeue() {
+struct request_t* dequeue() {
+//    fprintf(stderr, "SUP3.5\n");
     pthread_mutex_lock(&mutex);
     while (queueIsEmpty()) {
         pthread_cond_wait(&condition, &mutex);
     }
 
-    int next = request_queue[(head++) % q_size];
+    struct request_t* next = pop_request_queue();
+
+//    int next = request_queue[(head++) % max_size];
 
     pthread_mutex_unlock(&mutex);
     return next;
 }
+
+
 
 void *work(void *vargp)
 {
     int *myid = (int *)vargp;
     INFINATE_LOOP
     {
-        int connfd = dequeue();
+        struct request_t* req = dequeue();
+        int connfd = get_req_fd(req);
 
-        requestHandle(connfd, myid);
+        requestHandle(connfd, myid, req);
 
         Close(connfd);
+        free(req);
     }
-
-    return 0;
 }
 
-void enqueue(int fd) {
+void enqueue(int fd, int overload) {
     pthread_mutex_lock(&mutex);
 
-    request_queue[(tail++) % q_size] = fd;
+    push_request_queue(fd, overload);
 
     pthread_cond_signal(&condition);
     pthread_mutex_unlock(&mutex);
 }
 
-bool queueIsFull() { return tail - head == q_size; }
+
 
 int main(int argc, char *argv[])
 {
@@ -110,7 +112,10 @@ int main(int argc, char *argv[])
     //
     // HW3: Create some threads...
     //
-    request_queue = malloc(q_size * sizeof(int));
+
+    init_q();
+
+    request_queue = malloc(max_size * sizeof(int));
 
     thread_ids = malloc(threads * sizeof(pthread_t));
     for (int i=0; i<threads; i++) {
@@ -120,16 +125,16 @@ int main(int argc, char *argv[])
     listenfd = Open_listenfd(port);
     INFINATE_LOOP {
 	    clientlen = sizeof(clientaddr);
-        if (chosen_alg == BLOCK) {
-            pthread_mutex_lock(&mutex);
-            while (queueIsFull()){
-                pthread_cond_wait(&condition, &mutex);
-            }
-            pthread_cond_signal(&condition);
-            pthread_mutex_unlock(&mutex);
-        }
+//        if (chosen_alg == BLOCK) {
+//            pthread_mutex_lock(&mutex);
+//            while (queueIsFull()){
+//                pthread_cond_wait(&condition, &mutex);
+//            }
+//            pthread_cond_signal(&condition);
+//            pthread_mutex_unlock(&mutex);
+//        }
 	    connfd = Accept(listenfd, (SA *)&clientaddr, (socklen_t *) &clientlen);
-        gettimeofday(&request_clock, NULL);
+//        gettimeofday(&request_clock, NULL);
 
 	//
 	// HW3: In general, don't handle the request in the main thread.
@@ -138,27 +143,34 @@ int main(int argc, char *argv[])
 	//
         switch (chosen_alg) {
             case BLOCK:
-                enqueue(connfd);
+//                sprintf(stdout, "SUP");
+
+                enqueue(connfd, queueIsFull());
+//                fprintf(stderr, "SUP3\n");
                 break;
             case DROP_HEAD:
-                enqueue(connfd);
+                if(queueIsFull()){
+                    struct request_t* req = pop_request_queue();
+                    Close(get_req_fd(req));
+                }
+                enqueue(connfd, 0);
                 break;
             case DROP_RANDOM:
                 if (queueIsFull()){
-                    int half_q = q_size / 2;
+                    int half_q = max_size / 2;
                     for (int i = 0; i < half_q; ++i){
-                        int to_remove = rand() % (tail - head);
-                        for (int j = to_remove; (j % q_size) != (tail % q_size); ++j) {
-                            request_queue[j] = request_queue[(j + 1) % q_size];
-                        }
-                        --tail;
+                        fprintf(stderr, "SUP1\n");
+                        int to_remove = rand() % current_size;
+                        remove_req_by_idx(to_remove);
+                        current_size--;
                     }
                 }
-                enqueue(connfd);
+                fprintf(stderr, "SUP2\n");
+                enqueue(connfd, 0);
                 break;
             case DROP_TAIL:
-                if (queueIsFull()) --tail;
-                enqueue(connfd);
+                if (queueIsFull()) remove_req_by_idx(max_size - 1);
+                enqueue(connfd, 0);
                 break;
         }
     }
